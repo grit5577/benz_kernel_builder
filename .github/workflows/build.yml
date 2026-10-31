@@ -98,7 +98,7 @@ jobs:
           case "$ROOT_SOLUTION" in
             KernelSU)       curl -fLSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash ;;
             KernelSU-Next)  curl -fLSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash ;;
-            SukiSU Ultra) curl -fLSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main ;;
+            "SukiSU Ultra") curl -fLSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main ;;
             BakaSU)         curl -fLSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash ;;
             *) echo "Unknown root solution: $ROOT_SOLUTION"; exit 1 ;;
           esac
