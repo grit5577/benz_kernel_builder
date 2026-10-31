@@ -72,16 +72,30 @@ jobs:
       - name: Clone kernel source
         run: |
           case "$KERNEL_SOURCE" in
-            LineageOS) REPO="https://github.com/LineageOS/android_kernel_oneplus_sm8550.git" ;;
-            crDroid)   REPO="https://github.com/crdroidandroid/android_kernel_oneplus_sm8550.git" ;;
+            LineageOS) REPO="https://github.com/LineageOS/android_kernel_oneplus_sm8550" ;;
+            crDroid)   REPO="https://github.com/crdroidandroid/android_kernel_oneplus_sm8550" ;;
             *) echo "Unknown kernel source: $KERNEL_SOURCE"; exit 1 ;;
           esac
           BRANCH_ARGS=()
           if [ -n "$KERNEL_BRANCH" ]; then
             BRANCH_ARGS=(--branch "$KERNEL_BRANCH")
           fi
-          git clone --depth=1 "${BRANCH_ARGS[@]}" "$REPO" kernel
+          git clone --depth=1 "${BRANCH_ARGS[@]}" "$REPO.git" kernel
           git -C kernel log -1 --oneline
+
+          # The kernel tree symlinks oplus drivers (e.g. kernel/oplus_cpu/thermal) and vendor DTS
+          # to ../sm8550-modules and ../sm8550-devicetrees, so clone them alongside it like the ROM tree.
+          REF="${KERNEL_BRANCH:-$(git -C kernel rev-parse --abbrev-ref HEAD)}"
+          for PART in modules devicetrees; do
+            URL="$REPO-$PART.git"
+            if git ls-remote --exit-code "$URL" "$REF" >/dev/null; then
+              git clone --depth=1 --branch "$REF" "$URL" "sm8550-$PART"
+            else
+              echo "::warning::$URL has no ref '$REF', using its default branch"
+              git clone --depth=1 "$URL" "sm8550-$PART"
+            fi
+            git -C "sm8550-$PART" log -1 --oneline
+          done
 
       - name: Download AOSP Clang
         run: |
@@ -98,7 +112,7 @@ jobs:
           case "$ROOT_SOLUTION" in
             KernelSU)       curl -fLSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash ;;
             KernelSU-Next)  curl -fLSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash ;;
-            "SukiSU Ultra") curl -fLSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main ;;
+            SukiSU Ultra) curl -fLSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main ;;
             BakaSU)         curl -fLSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash ;;
             *) echo "Unknown root solution: $ROOT_SOLUTION"; exit 1 ;;
           esac
