@@ -1,0 +1,136 @@
+name: Build kernel for benz 
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_source:
+        description: "Kernel source"
+        required: true
+        type: choice
+        default: crDroid
+        options:
+          - LineageOS
+          - crDroid
+
+      kernel_branch:
+        description: "Kernel branch"
+        required: false
+        type: string
+        default: ""
+
+      root_solution:
+        description: "KernelSU flavour"
+        required: true
+        type: choice
+        default: "KernelSU"
+        options:
+          - KernelSU
+          - KernelSU-Next
+          - SukiSU Ultra
+          - BakaSU
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  Kernel_CI:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KERNEL_SOURCE: ${{ inputs.kernel_source }}
+      KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+      ROOT_SOLUTION: ${{ inputs.root_solution }}
+      CLANG_VERSION: clang-r584948
+      CLANG_AOSP_REF: refs/tags/android-17.0.0_r1
+      MAKE_ARGS: O=out ARCH=arm64 LLVM=1 LLVM_IAS=1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Set up swap
+        uses: pierotofy/set-swap-space@v1.0
+        with:
+          swap-size-gb: 16
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex patch pkg-config git curl tar xz-utils zip unzip \
+            cpio rsync kmod perl python3 python-is-python3 libssl-dev libelf-dev pahole \
+            libncurses-dev zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler
+
+      - name: Clone kernel source
+        run: |
+          case "$KERNEL_SOURCE" in
+            LineageOS) REPO="https://github.com/LineageOS/android_kernel_oneplus_sm8550.git" ;;
+            crDroid)   REPO="https://github.com/crdroidandroid/android_kernel_oneplus_sm8550.git" ;;
+            *) echo "Unknown kernel source: $KERNEL_SOURCE"; exit 1 ;;
+          esac
+          BRANCH_ARGS=()
+          if [ -n "$KERNEL_BRANCH" ]; then
+            BRANCH_ARGS=(--branch "$KERNEL_BRANCH")
+          fi
+          git clone --depth=1 "${BRANCH_ARGS[@]}" "$REPO" kernel
+          git -C kernel log -1 --oneline
+
+      - name: Download AOSP Clang
+        run: |
+          mkdir clang
+          curl -fL --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/${CLANG_AOSP_REF}/${CLANG_VERSION}.tar.gz" \
+            | tar -xz -C clang
+          echo "$GITHUB_WORKSPACE/clang/bin" >> "$GITHUB_PATH"
+          ./clang/bin/clang --version
+
+      - name: Adding Root Solution
+        working-directory: kernel
+        run: |
+          case "$ROOT_SOLUTION" in
+            KernelSU)       curl -fLSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash ;;
+            KernelSU-Next)  curl -fLSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash ;;
+            SukiSU Ultra) curl -fLSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main ;;
+            BakaSU)         curl -fLSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash ;;
+            *) echo "Unknown root solution: $ROOT_SOLUTION"; exit 1 ;;
+          esac
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          # Match crDroid device/oneplus/benz TARGET_KERNEL_CONFIG; resolve dependencies after merging.
+          make $MAKE_ARGS gki_defconfig
+          scripts/kconfig/merge_config.sh -m -O out out/.config \
+            arch/arm64/configs/vendor/kalama_GKI.config \
+            arch/arm64/configs/vendor/oplus/kalama_GKI.config \
+            arch/arm64/configs/vendor/debugfs.config
+          # ThinLTO instead of Full LTO keeps the link within GitHub runner RAM/time limits
+          scripts/config --file out/.config -e KSU -d LTO_CLANG_FULL -e LTO_CLANG_THIN
+          make $MAKE_ARGS olddefconfig
+          grep -q '^CONFIG_KSU=y' out/.config || { echo "CONFIG_KSU is not enabled"; exit 1; }
+          make $MAKE_ARGS -j"$(nproc --all)" Image
+
+      - name: Make AnyKernel3
+        run: |
+          ZIP_NAME="${KERNEL_SOURCE}_${ROOT_SOLUTION// /-}_$(date +%Y%m%d).zip"
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          git clone --depth=1 https://github.com/Kernel-SU/AnyKernel3.git
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          cd AnyKernel3
+          zip -r9 "../$ZIP_NAME" . -x '.git*' 'README.md' '*placeholder'
+
+      - name: Github Release
+        run: |
+          gh release create "v${{ github.run_number }}.${{ github.run_attempt }}" "$ZIP_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Kernel Build ${{ github.run_number }}" \
+            --notes "Automated kernel build: $KERNEL_SOURCE (${KERNEL_BRANCH:-default branch}) + $ROOT_SOLUTION"
+          echo "Release created successfully"
